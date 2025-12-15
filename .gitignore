@@ -1,0 +1,26 @@
+# Python / venv
+.venv/
+__pycache__/
+*.pyc
+
+# Build artifacts
+build/
+dist/
+Release/
+*.exe
+*.spec
+*.zip
+
+# Runtime dependencies
+bin/
+adb.exe
+AdbWinApi.dll
+AdbWinUsbApi.dll
+
+# Secrets / keys
+*adbkey*
+*.key
+*.pub
+
+# Source exclusion (intentional)
+FirestickRemote.py
