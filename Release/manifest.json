@@ -1,5 +1,5 @@
 {
-  "app_version": "1.2.3",
+  "app_version": "1.2.4",
   "bin_required_version": "1.0.0",
   "exe_asset": "FirestickRemote.exe",
   "bin_asset": "bin_update.zip"

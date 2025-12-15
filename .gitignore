@@ -6,8 +6,6 @@ __pycache__/
 # Build artifacts
 build/
 dist/
-Release/
-*.exe
 *.spec
 *.zip
 
