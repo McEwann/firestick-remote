@@ -3,6 +3,8 @@ import sys
 import shutil
 import threading
 import subprocess
+import time
+import re
 import tkinter as tk
 from tkinter import messagebox
 from tkinter import ttk
@@ -11,14 +13,12 @@ from tkinter import ttk
 # ---------------- ADB / PATH ----------------
 
 def _base_dir() -> str:
-    # Folder where the EXE lives (or this .py when running from source)
     if getattr(sys, "frozen", False):
         return os.path.dirname(sys.executable)
     return os.path.dirname(os.path.abspath(__file__))
 
 
 def _bin_dir() -> str:
-    # Expect /bin next to the EXE / .py
     return os.path.join(_base_dir(), "bin")
 
 
@@ -29,17 +29,14 @@ def init_adb_keys() -> None:
         os.environ["ADB_VENDOR_KEYS"] = key_path
         print("Using bundled ADB key:", key_path)
     else:
-        print("WARNING: firestick_remote_adbkey not found; using default adb keys.")
+        print("Bundled ADB key not found; using default adb keys.")
 
 
 def adb_path() -> str:
-    # Prefer the bundled adb.exe; fallback to PATH; last resort "adb"
     candidate = os.path.join(_bin_dir(), "adb.exe")
     if os.path.exists(candidate):
         return candidate
-
-    found = shutil.which("adb")
-    return found if found else "adb"
+    return shutil.which("adb") or "adb"
 
 
 def run_adb_command(args):
@@ -70,8 +67,8 @@ def run_adb_command(args):
         out = (completed.stdout or "").strip()
         err = (completed.stderr or "").strip()
 
-        # Debug: intentionally simple/rough (more like real life)
-        print("adb >", cmd)
+        # Debug (leave in; helps you troubleshoot users)
+        print("adb >", " ".join(cmd))
         if out:
             print("out >", out)
         if err:
@@ -94,7 +91,6 @@ def device_authorized() -> bool:
     if not ok:
         return False
 
-    # If any device is unauthorized, treat as not authorized (simple rule)
     for line in out.splitlines():
         if "\tunauthorized" in line:
             return False
@@ -231,9 +227,22 @@ class FirestickRemote(ttk.Frame):
             ]
         )
 
+        # ✅ Make checkbuttons readable on dark card background
+        style.configure(
+            "Card.TCheckbutton",
+            background=bg_card,
+            foreground=text_main,
+            font=("Segoe UI", 9)
+        )
+        style.map(
+            "Card.TCheckbutton",
+            foreground=[("disabled", "#4b5563")],
+            background=[("active", bg_card)]
+        )
+
     def _build_ui(self):
         self.master.title("Fire Stick ADB Remote")
-        self.master.minsize(380, 380)
+        self.master.minsize(380, 400)
         self.master.rowconfigure(0, weight=1)
         self.master.columnconfigure(0, weight=1)
 
@@ -259,40 +268,41 @@ class FirestickRemote(ttk.Frame):
         conn_card.grid(row=1, column=0, sticky="ew")
         conn_card.columnconfigure(0, weight=1)
 
-        # IP + port + buttons
+        # Row: IP + port + buttons
         conn_row = ttk.Frame(conn_card, style="Card.TFrame")
         conn_row.grid(row=0, column=0, sticky="ew")
-        conn_row.columnconfigure(1, weight=1)
+        conn_row.columnconfigure(0, weight=1)
 
         ttk.Label(conn_row, text="IP address", style="Label.TLabel").grid(row=0, column=0, sticky="w")
-        ip_entry = ttk.Entry(conn_row, textvariable=self.ip_var, width=18)
-        ip_entry.grid(row=1, column=0, sticky="ew", pady=(2, 0))
+        self.ip_entry = ttk.Entry(conn_row, textvariable=self.ip_var, width=18)
+        self.ip_entry.grid(row=1, column=0, sticky="ew", pady=(2, 0))
 
         ttk.Label(conn_row, text="Port", style="Label.TLabel").grid(row=0, column=1, sticky="w", padx=(10, 0))
-        port_entry = ttk.Entry(conn_row, textvariable=self.port_var, width=8)
-        port_entry.grid(row=1, column=1, sticky="w", pady=(2, 0), padx=(10, 0))
+        self.port_entry = ttk.Entry(conn_row, textvariable=self.port_var, width=8)
+        self.port_entry.grid(row=1, column=1, sticky="w", pady=(2, 0), padx=(10, 0))
 
         btn_frame = ttk.Frame(conn_row, style="Card.TFrame")
         btn_frame.grid(row=1, column=2, sticky="e", padx=(10, 0))
 
-        ttk.Button(btn_frame, text="Connect", style="Accent.TButton", command=self.connect).grid(
-            row=0, column=0, padx=(0, 4)
-        )
-        ttk.Button(btn_frame, text="Disconnect", style="Accent.TButton", command=self.disconnect).grid(
-            row=0, column=1
-        )
+        self.connect_btn = ttk.Button(btn_frame, text="Connect", style="Accent.TButton", command=self.connect)
+        self.connect_btn.grid(row=0, column=0, padx=(0, 4))
+
+        self.disconnect_btn = ttk.Button(btn_frame, text="Disconnect", style="Accent.TButton", command=self.disconnect)
+        self.disconnect_btn.grid(row=0, column=1)
 
         # Status
         self.status_label = ttk.Label(conn_card, textvariable=self.status_var, style="Status.TLabel")
         self.status_label.grid(row=1, column=0, sticky="w", pady=(8, 0))
 
-        # Keep awake checkbox (stay alive)
-        ttk.Checkbutton(
+        # ✅ Keep awake checkbox (visible + stored so we can disable/enable it)
+        self.keep_alive_cb = ttk.Checkbutton(
             conn_card,
             text="Keep Fire TV awake",
             variable=self.keep_alive_var,
-            command=self._on_toggle_keep_alive
-        ).grid(row=2, column=0, sticky="w", pady=(6, 0))
+            command=self._on_toggle_keep_alive,
+            style="Card.TCheckbutton"
+        )
+        self.keep_alive_cb.grid(row=2, column=0, sticky="w", pady=(6, 0))
 
         # Remote card
         remote_card = ttk.Frame(main, style="Remote.TFrame", padding=16)
@@ -323,33 +333,24 @@ class FirestickRemote(ttk.Frame):
         for c in range(3):
             remote_grid.columnconfigure(c, weight=1)
 
-        def add_btn(label, r, c, keycode, width=8, pady=4):
-            b = ttk.Button(
-                remote_grid,
-                text=label,
-                width=width,
-                style="Remote.TButton",
-                command=lambda: self.send_key(keycode)
-            )
+        def add_btn(label, r, c, command, width=8, pady=4):
+            b = ttk.Button(remote_grid, text=label, width=width, style="Remote.TButton", command=command)
             b.grid(row=r, column=c, padx=6, pady=pady)
             self.remote_buttons.append(b)
 
         # D-pad
-        add_btn("▲", 0, 1, 19)
-        add_btn("◀", 1, 0, 21)
-        add_btn("OK", 1, 1, 66, width=10)
-        add_btn("▶", 1, 2, 22)
-        add_btn("▼", 2, 1, 20)
+        add_btn("▲", 0, 1, lambda: self.send_key(19))
+        add_btn("◀", 1, 0, lambda: self.send_key(21))
+        add_btn("OK", 1, 1, self.send_ok, width=10)  # ✅ OK uses robust handler
+        add_btn("▶", 1, 2, lambda: self.send_key(22))
+        add_btn("▼", 2, 1, lambda: self.send_key(20))
 
         bottom = ttk.Frame(remote_card, style="Remote.TFrame")
         bottom.grid(row=2, column=0, pady=(10, 0))
 
         def add_bottom(label, keycode, col):
             b = ttk.Button(
-                bottom,
-                text=label,
-                width=10,
-                style="Remote.TButton",
+                bottom, text=label, width=10, style="Remote.TButton",
                 command=lambda: self.send_key(keycode)
             )
             b.grid(row=0, column=col, padx=6)
@@ -373,8 +374,12 @@ class FirestickRemote(ttk.Frame):
         self.master.bind("<Down>", lambda e: self.send_key(20))
         self.master.bind("<Left>", lambda e: self.send_key(21))
         self.master.bind("<Right>", lambda e: self.send_key(22))
-        self.master.bind("<Return>", lambda e: self.send_key(66))
+        self.master.bind("<Return>", lambda e: self.send_ok())
         self.master.bind("<Escape>", lambda e: self.send_key(4))
+
+        # Make pressing Enter in the IP/Port fields run connect (nice UX)
+        self.ip_entry.bind("<Return>", lambda e: self.connect())
+        self.port_entry.bind("<Return>", lambda e: self.connect())
 
     def _center_window(self):
         self.master.update_idletasks()
@@ -393,15 +398,37 @@ class FirestickRemote(ttk.Frame):
             for btn in self.remote_buttons:
                 btn.state(["!disabled"])
             self.status_label.configure(style="StatusGood.TLabel")
+            self.disconnect_btn.state(["!disabled"])
+            self.connect_btn.state(["disabled"])
+            self.keep_alive_cb.state(["!disabled"])
         else:
             for btn in self.remote_buttons:
                 btn.state(["disabled"])
             self.status_label.configure(style="Status.TLabel")
+            self.disconnect_btn.state(["disabled"])
+            self.connect_btn.state(["!disabled"])
+            self.keep_alive_cb.state(["disabled"])
+
+    # ---- OK handling ----
+
+    def send_ok(self):
+        if not self.is_connected:
+            messagebox.showwarning("Not connected", "Please connect to a Fire TV first.")
+            return
+
+        def worker():
+            # Fire TV "Select" is DPAD_CENTER (23)
+            run_adb_command(["shell", "input", "keyevent", "23"])
+            # Some apps react only to ENTER (66), so do a tiny fallback tap
+            time.sleep(0.05)
+            run_adb_command(["shell", "input", "keyevent", "66"])
+
+        threading.Thread(target=worker, daemon=True).start()
 
     # ---- Keep-alive ----
 
     def _on_toggle_keep_alive(self):
-        # If not connected, we don't start the thread yet, but we keep the checkbox value.
+        # Keep-alive sends: adb shell input keyevent 0 (KEYCODE_UNKNOWN) every 45s
         if self.keep_alive_var.get():
             if self.is_connected:
                 self._start_keep_alive()
@@ -409,15 +436,12 @@ class FirestickRemote(ttk.Frame):
             self._stop_keep_alive()
 
     def _start_keep_alive(self):
-        # Only start one
         if self._keepalive_thread and self._keepalive_thread.is_alive():
             return
 
         self._keepalive_stop.clear()
 
         def loop():
-            # "No-op-ish" keyevent. Low chance of disrupting UI.
-            # Interval intentionally not too aggressive.
             while not self._keepalive_stop.wait(45):
                 if not self.is_connected:
                     break
@@ -433,12 +457,32 @@ class FirestickRemote(ttk.Frame):
 
     # ---- Actions ----
 
+    def _valid_ip(self, ip: str) -> bool:
+        # Accept IPv4; keeps it simple and avoids typos
+        m = re.fullmatch(r"(\d{1,3}\.){3}\d{1,3}", ip)
+        if not m:
+            return False
+        parts = ip.split(".")
+        return all(0 <= int(p) <= 255 for p in parts)
+
+    def _valid_port(self, port: str) -> bool:
+        if not port.isdigit():
+            return False
+        p = int(port)
+        return 1 <= p <= 65535
+
     def connect(self):
         ip = self.ip_var.get().strip()
         port = (self.port_var.get().strip() or "5555").strip()
 
         if not ip:
             messagebox.showerror("Error", "Please enter an IP address.")
+            return
+        if not self._valid_ip(ip):
+            messagebox.showerror("Error", "Please enter a valid IPv4 address (e.g. 192.168.1.50).")
+            return
+        if not self._valid_port(port):
+            messagebox.showerror("Error", "Please enter a valid port (1–65535).")
             return
 
         success, out, err = run_adb_command(["connect", f"{ip}:{port}"])
@@ -459,7 +503,6 @@ class FirestickRemote(ttk.Frame):
                 self.is_connected = True
                 self.status_var.set(f"Connected to {ip}:{port}")
 
-                # If user wants it, start keep-alive
                 if self.keep_alive_var.get():
                     self._start_keep_alive()
         else:
@@ -470,13 +513,12 @@ class FirestickRemote(ttk.Frame):
         self.update_remote_buttons_state()
 
     def disconnect(self):
-        # Stop keep-alive first (clean exit)
         self._stop_keep_alive()
 
         ip = self.ip_var.get().strip()
         port = (self.port_var.get().strip() or "5555").strip()
 
-        if ip:
+        if ip and self._valid_port(port):
             run_adb_command(["disconnect", f"{ip}:{port}"])
         else:
             run_adb_command(["disconnect"])
@@ -495,9 +537,7 @@ class FirestickRemote(ttk.Frame):
             if not ok:
                 self.master.after(
                     0,
-                    lambda: messagebox.showerror(
-                        "ADB error", err or out or "Failed to send key event"
-                    ),
+                    lambda: messagebox.showerror("ADB error", err or out or "Failed to send key event"),
                 )
 
         threading.Thread(target=worker, daemon=True).start()
@@ -512,5 +552,11 @@ class FirestickRemote(ttk.Frame):
 if __name__ == "__main__":
     init_adb_keys()
     root = tk.Tk()
+    icon_path = os.path.join(_bin_dir(), "firestick.ico")
+    if os.path.exists(icon_path):
+        try:
+            root.iconbitmap(icon_path)
+        except Exception:
+            pass
     app = FirestickRemote(root)
     root.mainloop()
