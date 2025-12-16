@@ -11,4 +11,4 @@ AdbWinUsbApi.dll
 *.key
 *.pub
 # Source exclusion
-FirestickRemote.py
+#FirestickRemote.py
