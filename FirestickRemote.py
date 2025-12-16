@@ -14,7 +14,7 @@ import tkinter as tk
 from tkinter import messagebox
 from tkinter import ttk
 
-APP_VERSION = "1.2.5"
+APP_VERSION = "1.2.6"
 BIN_REQUIRED_VERSION = "1.0.0"
 
 GITHUB_OWNER = "McEwann"
@@ -54,14 +54,12 @@ def adb_path() -> str:
 
 def run_adb_command(args):
     cmd = [adb_path()] + args
-
     startupinfo = None
     creationflags = 0
     if os.name == "nt":
         startupinfo = subprocess.STARTUPINFO()
         startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
         creationflags = subprocess.CREATE_NO_WINDOW
-
     try:
         completed = subprocess.run(
             cmd,
@@ -71,19 +69,15 @@ def run_adb_command(args):
             startupinfo=startupinfo,
             creationflags=creationflags
         )
-
         ok = (completed.returncode == 0)
         out = (completed.stdout or "").strip()
         err = (completed.stderr or "").strip()
-
         print("adb >", " ".join(cmd))
         if out:
             print("out >", out)
         if err:
             print("err >", err, file=sys.stderr)
-
         return ok, out, err
-
     except FileNotFoundError:
         return False, "", (
             "adb executable not found.\n\n"
@@ -98,7 +92,6 @@ def device_authorized() -> bool:
     ok, out, _ = run_adb_command(["devices"])
     if not ok:
         return False
-
     for line in out.splitlines():
         if "\tunauthorized" in line:
             return False
@@ -166,11 +159,9 @@ def download_public_file(url: str, dest_path: str) -> None:
 def _validate_downloaded_exe(path: str) -> None:
     if not os.path.exists(path):
         raise RuntimeError("Downloaded EXE file is missing.")
-
     size = os.path.getsize(path)
     if size < 1024 * 200:
         raise RuntimeError(f"Downloaded EXE looks too small ({size} bytes).")
-
     with open(path, "rb") as f:
         sig = f.read(2)
     if sig != b"MZ":
@@ -181,40 +172,32 @@ def read_manifest_from_release(release_json: dict) -> dict:
     url = find_asset_download_url(release_json, "manifest.json")
     if not url:
         raise RuntimeError("Release is missing manifest.json asset.")
-
     tmp = os.path.join(tempfile.gettempdir(), f"firestick_manifest_{int(time.time())}.json")
     download_public_file(url, tmp)
-
     with open(tmp, "r", encoding="utf-8") as f:
         manifest = json.load(f)
-
     try:
         os.remove(tmp)
     except Exception:
         pass
-
     return manifest
 
 
 def apply_bin_update(zip_path: str, bin_dir: str) -> None:
     os.makedirs(bin_dir, exist_ok=True)
-
     with zipfile.ZipFile(zip_path, "r") as z:
         for member in z.infolist():
             name = member.filename.replace("\\", "/")
             if name.startswith("/") or ".." in name.split("/"):
                 continue
-
             target_path = os.path.join(bin_dir, name)
             os.makedirs(os.path.dirname(target_path), exist_ok=True)
-
             with z.open(member, "r") as src, open(target_path, "wb") as dst:
                 shutil.copyfileobj(src, dst)
 
 
 def schedule_exe_swap(new_exe_path: str, current_exe_path: str) -> None:
     bat = os.path.join(tempfile.gettempdir(), "firestick_update.bat")
-
     script = f"""@echo off
 setlocal
 ping 127.0.0.1 -n 3 >nul
@@ -223,15 +206,12 @@ move /Y "{new_exe_path}" "{current_exe_path}" >nul
 start "" "{current_exe_path}"
 del "%~f0"
 """
-
     with open(bat, "w", encoding="utf-8") as f:
         f.write(script)
-
     subprocess.Popen(
         ["cmd.exe", "/c", bat],
         creationflags=subprocess.CREATE_NO_WINDOW
     )
-
     sys.exit(0)
 
 
@@ -239,33 +219,32 @@ class FirestickRemote(ttk.Frame):
     def __init__(self, master: tk.Tk):
         super().__init__(master)
         self.master = master
-
         self.ip_var = tk.StringVar(value="")
         self.port_var = tk.StringVar(value="5555")
         self.status_var = tk.StringVar(value="Not connected")
-
         self.is_connected = False
         self.remote_buttons = []
-
         self.keep_alive_var = tk.BooleanVar(value=False)
         self._keepalive_stop = threading.Event()
         self._keepalive_thread = None
-
         self.cmd_var = tk.StringVar(value="")
         self.advanced_cmd_var = tk.BooleanVar(value=False)
         self._cmd_history = []
         self._cmd_history_index = 0
-
         self.cmd_entry = None
         self.cmd_send_btn = None
         self.advanced_cb = None
         self.cmd_output = None
 
+        # NEW: Send Text box
+        self.text_var = tk.StringVar(value="")
+        self.text_entry = None
+        self.text_send_btn = None
+
         self._configure_style()
         self._build_ui()
         self.update_remote_buttons_state()
         self._center_window()
-
         self.master.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def _configure_style(self):
@@ -274,7 +253,6 @@ class FirestickRemote(ttk.Frame):
             style.theme_use("clam")
         except tk.TclError:
             pass
-
         bg_main = "#0b1120"
         bg_card = "#111827"
         bg_remote = "#020617"
@@ -282,22 +260,16 @@ class FirestickRemote(ttk.Frame):
         danger = "#f97373"
         text_main = "#e5e7eb"
         text_muted = "#9ca3af"
-
         self.master.configure(bg=bg_main)
-
         style.configure("Main.TFrame", background=bg_main)
         style.configure("Card.TFrame", background=bg_card)
         style.configure("Remote.TFrame", background=bg_remote)
-
         style.configure("Title.TLabel", background=bg_main, foreground=text_main, font=("Segoe UI", 12, "bold"))
         style.configure("Subtitle.TLabel", background=bg_main, foreground=text_muted, font=("Segoe UI", 8))
         style.configure("Label.TLabel", background=bg_card, foreground=text_main, font=("Segoe UI", 9))
-
         style.configure("Status.TLabel", background=bg_card, foreground=danger, font=("Segoe UI", 9, "bold"))
         style.configure("StatusGood.TLabel", background=bg_card, foreground="#4ade80", font=("Segoe UI", 9, "bold"))
-
         style.configure("TEntry", fieldbackground=bg_remote, foreground=text_main, bordercolor="#1f2937", padding=3)
-
         style.configure(
             "Accent.TButton",
             font=("Segoe UI", 9, "bold"),
@@ -309,17 +281,52 @@ class FirestickRemote(ttk.Frame):
         style.map("Accent.TButton",
                   background=[("active", "#0ea5e9"), ("disabled", "#1e293b")],
                   foreground=[("disabled", "#6b7280")])
-
         style.configure("Remote.TButton", font=("Segoe UI", 9, "bold"), padding=6, relief="flat",
                         foreground=text_main, background="#1f2937")
         style.map("Remote.TButton",
                   background=[("pressed", "#38bdf8"), ("active", "#2563eb"), ("disabled", "#111827")],
                   foreground=[("pressed", "#0b1120"), ("active", "#e5e7eb"), ("disabled", "#4b5563")])
-
         style.configure("Card.TCheckbutton", background=bg_card, foreground=text_main, font=("Segoe UI", 9))
         style.map("Card.TCheckbutton",
                   foreground=[("disabled", "#4b5563")],
                   background=[("active", bg_card)])
+
+    def _make_collapsible_card(self, parent, title: str, row: int):
+        card = ttk.Frame(parent, style="Card.TFrame", padding=12)
+        card.grid(row=row, column=0, sticky="ew", pady=(12, 0))
+        card.columnconfigure(0, weight=1)
+
+        head = ttk.Frame(card, style="Card.TFrame")
+        head.grid(row=0, column=0, sticky="ew")
+        head.columnconfigure(1, weight=1)
+
+        is_open = tk.BooleanVar(value=True)
+        arrow_var = tk.StringVar(value="▼")
+
+        def toggle():
+            if is_open.get():
+                body.grid_remove()
+                arrow_var.set("▶")
+                is_open.set(False)
+            else:
+                body.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+                arrow_var.set("▼")
+                is_open.set(True)
+
+        btn = ttk.Button(head, textvariable=arrow_var, width=2, style="Accent.TButton", command=toggle)
+        btn.grid(row=0, column=0, padx=(0, 8))
+
+        lbl = ttk.Label(head, text=title, style="Label.TLabel")
+        lbl.grid(row=0, column=1, sticky="w")
+
+        body = ttk.Frame(card, style="Card.TFrame")
+        body.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        body.columnconfigure(0, weight=1)
+
+        head.bind("<Button-1>", lambda e: toggle())
+        lbl.bind("<Button-1>", lambda e: toggle())
+
+        return card, body
 
     def _build_ui(self):
         self.master.title("Fire Stick ADB Remote")
@@ -329,6 +336,7 @@ class FirestickRemote(ttk.Frame):
 
         main = ttk.Frame(self.master, style="Main.TFrame", padding=16)
         main.grid(row=0, column=0, sticky="nsew")
+        main.columnconfigure(0, weight=1)
 
         header = ttk.Frame(main, style="Main.TFrame")
         header.grid(row=0, column=0, sticky="ew")
@@ -434,41 +442,42 @@ class FirestickRemote(ttk.Frame):
         add_bottom("Menu", 82, 2)
         add_bottom("Play / Pause", 85, 3)
 
-        cmd_card = ttk.Frame(main, style="Card.TFrame", padding=12)
-        cmd_card.grid(row=3, column=0, sticky="ew", pady=(12, 0))
-        cmd_card.columnconfigure(1, weight=1)
+        cmd_card, cmd_body = self._make_collapsible_card(main, "Manual ADB Command", row=3)
+        cmd_body.columnconfigure(1, weight=1)
 
-        ttk.Label(cmd_card, text="Manual ADB Command", style="Label.TLabel").grid(
-            row=0, column=0, columnspan=3, sticky="w", pady=(0, 6)
-        )
+        ttk.Label(cmd_body, text="adb shell", style="Label.TLabel").grid(row=0, column=0, sticky="w")
+        self.cmd_entry = ttk.Entry(cmd_body, textvariable=self.cmd_var)
+        self.cmd_entry.grid(row=0, column=1, sticky="ew", padx=(6, 6))
 
-        ttk.Label(cmd_card, text="adb shell", style="Label.TLabel").grid(row=1, column=0, sticky="w")
-
-        self.cmd_entry = ttk.Entry(cmd_card, textvariable=self.cmd_var)
-        self.cmd_entry.grid(row=1, column=1, sticky="ew", padx=(6, 6))
-
-        self.cmd_send_btn = ttk.Button(
-            cmd_card, text="Send", style="Accent.TButton", command=self.send_manual_command
-        )
-        self.cmd_send_btn.grid(row=1, column=2)
+        self.cmd_send_btn = ttk.Button(cmd_body, text="Send", style="Accent.TButton", command=self.send_manual_command)
+        self.cmd_send_btn.grid(row=0, column=2)
 
         self.advanced_cb = ttk.Checkbutton(
-            cmd_card,
+            cmd_body,
             text="Run as full adb command (advanced)",
             variable=self.advanced_cmd_var,
             style="Card.TCheckbutton"
         )
-        self.advanced_cb.grid(row=2, column=0, columnspan=3, sticky="w", pady=(6, 0))
+        self.advanced_cb.grid(row=1, column=0, columnspan=3, sticky="w", pady=(6, 0))
 
         self.cmd_output = tk.Text(
-            cmd_card, height=4, wrap="word",
+            cmd_body, height=4, wrap="word",
             bg="#020617", fg="#e5e7eb", relief="flat"
         )
-        self.cmd_output.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(8, 0))
+        self.cmd_output.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(8, 0))
         self.cmd_output.configure(state="disabled")
 
+        text_card, text_body = self._make_collapsible_card(main, "Send Text (to focused field)", row=4)
+        text_body.columnconfigure(1, weight=1)
+
+        ttk.Label(text_body, text="Text", style="Label.TLabel").grid(row=0, column=0, sticky="w")
+        self.text_entry = ttk.Entry(text_body, textvariable=self.text_var)
+        self.text_entry.grid(row=0, column=1, sticky="ew", padx=(6, 6))
+        self.text_send_btn = ttk.Button(text_body, text="Send", style="Accent.TButton", command=self.send_text)
+        self.text_send_btn.grid(row=0, column=2)
+
         footer = ttk.Frame(main, style="Main.TFrame")
-        footer.grid(row=4, column=0, sticky="ew", pady=(10, 0))
+        footer.grid(row=5, column=0, sticky="ew", pady=(10, 0))
         footer.columnconfigure(0, weight=1)
         ttk.Label(footer, text="Written by Craig Douglas Poole QA", style="Subtitle.TLabel").grid(
             row=0, column=0, sticky="e"
@@ -488,6 +497,8 @@ class FirestickRemote(ttk.Frame):
         self.cmd_entry.bind("<Up>", self._history_up)
         self.cmd_entry.bind("<Down>", self._history_down)
 
+        self.text_entry.bind("<Return>", lambda e: self.send_text())
+
     def _center_window(self):
         self.master.update_idletasks()
         w = self.master.winfo_width()
@@ -506,13 +517,17 @@ class FirestickRemote(ttk.Frame):
             self.disconnect_btn.state(["!disabled"])
             self.connect_btn.state(["disabled"])
             self.keep_alive_cb.state(["!disabled"])
-
             if self.cmd_entry is not None:
                 self.cmd_entry.state(["!disabled"])
             if self.cmd_send_btn is not None:
                 self.cmd_send_btn.state(["!disabled"])
             if self.advanced_cb is not None:
                 self.advanced_cb.state(["!disabled"])
+            # NEW
+            if self.text_entry is not None:
+                self.text_entry.state(["!disabled"])
+            if self.text_send_btn is not None:
+                self.text_send_btn.state(["!disabled"])
         else:
             for btn in self.remote_buttons:
                 btn.state(["disabled"])
@@ -520,13 +535,17 @@ class FirestickRemote(ttk.Frame):
             self.disconnect_btn.state(["disabled"])
             self.connect_btn.state(["!disabled"])
             self.keep_alive_cb.state(["disabled"])
-
             if self.cmd_entry is not None:
                 self.cmd_entry.state(["disabled"])
             if self.cmd_send_btn is not None:
                 self.cmd_send_btn.state(["disabled"])
             if self.advanced_cb is not None:
                 self.advanced_cb.state(["disabled"])
+            # NEW
+            if self.text_entry is not None:
+                self.text_entry.state(["disabled"])
+            if self.text_send_btn is not None:
+                self.text_send_btn.state(["disabled"])
 
     def _is_dangerous(self, cmd: str) -> bool:
         c = (cmd or "").lower()
@@ -579,20 +598,16 @@ class FirestickRemote(ttk.Frame):
         if not self.is_connected:
             messagebox.showwarning("Not connected", "Please connect to a Fire TV first.")
             return
-
         cmd = self.cmd_var.get().strip()
         if not cmd:
             return
-
         self._push_history(cmd)
-
         if self.advanced_cmd_var.get():
             args = cmd.split()
             shown = f"adb {cmd}"
         else:
             args = ["shell"] + cmd.split()
             shown = f"adb shell {cmd}"
-
         if self._is_dangerous(cmd):
             ok = messagebox.askyesno(
                 "Confirm command",
@@ -602,7 +617,6 @@ class FirestickRemote(ttk.Frame):
             )
             if not ok:
                 return
-
         self._append_cmd_output(f"$ {shown}")
 
         def worker():
@@ -610,7 +624,33 @@ class FirestickRemote(ttk.Frame):
             result = out if out else err if err else "OK"
             prefix = "✓" if ok else "✗"
             self.master.after(0, lambda: self._append_cmd_output(f"{prefix} {result}\n"))
+        threading.Thread(target=worker, daemon=True).start()
 
+    # NEW: Send Text helpers
+    def _escape_adb_input_text(self, s: str) -> str:
+        s = (s or "").strip()
+        if not s:
+            return ""
+        s = s.replace(" ", "%s")
+        for ch in r'\|&;<>()$`"\'*?[]{}!':
+            s = s.replace(ch, "\\" + ch)
+        return s
+
+    def send_text(self):
+        if not self.is_connected:
+            messagebox.showwarning("Not connected", "Please connect to a Fire TV first.")
+            return
+        raw = self.text_var.get()
+        if not raw.strip():
+            return
+        escaped = self._escape_adb_input_text(raw)
+        self._append_cmd_output(f'$ adb shell input text "{raw}"')
+
+        def worker():
+            ok, out, err = run_adb_command(["shell", "input", "text", escaped])
+            result = out if out else err if err else "OK"
+            prefix = "✓" if ok else "✗"
+            self.master.after(0, lambda: self._append_cmd_output(f"{prefix} {result}\n"))
         threading.Thread(target=worker, daemon=True).start()
 
     def check_updates(self):
@@ -621,9 +661,7 @@ class FirestickRemote(ttk.Frame):
                     "Set GITHUB_OWNER and GITHUB_REPO at the top of the script."
                 ))
                 return
-
             self.master.after(0, lambda: self.update_btn.state(["disabled"]))
-
             try:
                 release = get_latest_release()
                 manifest = read_manifest_from_release(release)
@@ -742,8 +780,6 @@ class FirestickRemote(ttk.Frame):
             return
 
         def worker():
-            run_adb_command(["shell", "input", "keyevent", "23"])
-            time.sleep(0.05)
             run_adb_command(["shell", "input", "keyevent", "66"])
 
         threading.Thread(target=worker, daemon=True).start()
@@ -758,7 +794,6 @@ class FirestickRemote(ttk.Frame):
     def _start_keep_alive(self):
         if self._keepalive_thread and self._keepalive_thread.is_alive():
             return
-
         self._keepalive_stop.clear()
 
         def loop():
